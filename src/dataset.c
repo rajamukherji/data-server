@@ -8,7 +8,6 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <jansson.h>
 
 /*
 string column structure (with N values):
@@ -175,6 +174,7 @@ void column_real_set(column_t *Column, size_t Index, double Value) {
 }
 
 dataset_t *dataset_create(const char *Path, const char *Name, size_t Length) {
+	printf("Creating dataset: %s with %d entries at %s\n", Name, Length, Path);
 	if (mkdir(Path, 0777)) return NULL;
 	dataset_t *Dataset = new(dataset_t);
 	Dataset->Type = DatasetT;
@@ -195,7 +195,7 @@ dataset_t *dataset_open(const char *Path) {
 	json_error_t Error;
 	Dataset->Info = json_load_file(Dataset->InfoFile, 0, &Error);
 	if (!Dataset->Info) {
-		fprintf(stderr, "Error: %s:%d: %d\n", Error.source, Error.line, Error.text);
+		fprintf(stderr, "Error: %s:%d: %s\n", Error.source, Error.line, Error.text);
 		return NULL;
 	}
 	json_t *ColumnsJson;
@@ -209,6 +209,10 @@ dataset_t *dataset_open(const char *Path) {
 		Slot = &Column->Next;
 	}
 	return Dataset;
+}
+
+json_t *dataset_get_info(dataset_t *Dataset) {
+	return Dataset->Info;
 }
 
 size_t dataset_get_length(dataset_t *Dataset) {

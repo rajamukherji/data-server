@@ -22,7 +22,7 @@ GC := meta("gc"):scan("install") => fun() do
 		"--enable-parallel-mark",
 		"--disable-gcj-support",
 		"--enable-redirect-malloc",
-		'--prefix={BUILDDIR}'
+		'--prefix={PATH}'
 	}
 	file("gc"):rmdir:mkdir:chdir
 	execute('wget -nv https://github.com/ivmai/bdwgc/releases/download/v{GC_VERSION}/gc-{GC_VERSION}.tar.gz -O- | tar xzP --strip-components=1')
@@ -32,10 +32,48 @@ GC := meta("gc"):scan("install") => fun() do
 	ret [PATH/"lib/libgc.a", PATH/"lib/libcord.a"]
 end
 
+ZEROMQ_VERSION := old or "4.2.5"
+CZMQ_VERSION := old or "4.1.1"
+LZ4_VERSION := old or "1.8.3"
+
+LZ4 := meta("lz4"):scan("install") => fun() do
+	file("lz4"):rmdir:mkdir:chdir
+	execute('wget -nv https://github.com/lz4/lz4/archive/v{LZ4_VERSION}.tar.gz -O- | tar xzP --strip-components=1')
+	execute('make')
+	execute('make install PREFIX={PATH}')
+	return [PATH/"lib/liblz4.a"]
+end
+
+ZEROMQ := meta("zmq"):scan("install")[LZ4] => fun() do
+	file("zeromq"):rmdir:mkdir:chdir
+	execute('wget -nv https://github.com/zeromq/libzmq/releases/download/v{ZEROMQ_VERSION}/zeromq-{ZEROMQ_VERSION}.tar.gz -O- | tar xzP --strip-components=1')
+	execute("./configure --disable-shared --enable-static",
+		'--prefix={PATH}',
+		"--without-man-pages",
+		'PKG_CONFIG_LIBDIR=\"{PATH/"lib/pkgconfig"}\"'
+	)
+	execute("make")
+	execute("make install")
+	ret [PATH/"lib/libzmq.a"]
+end
+
+CZMQ := meta("czmq"):scan("install")[ZEROMQ] => fun() do
+	file("czmq"):rmdir:mkdir:chdir
+	execute('wget -nv https://github.com/zeromq/czmq/releases/download/v{CZMQ_VERSION}/czmq-{CZMQ_VERSION}.tar.gz -O- | tar xzP --strip-components=1')
+	execute("./configure --disable-shared --enable-static",
+		'--prefix={PATH}',
+		"--without-man-pages",
+		'PKG_CONFIG_LIBDIR=\"{PATH/"lib/pkgconfig"}\"'
+	)
+	execute("make")
+	execute("make install")
+	ret [PATH/"lib/libczmq.a"]
+end
+
 file("minilang"):mkdir
 file("whereami/src"):mkdir
 CFLAGS := old + ['-D_GNU_SOURCE', "-Iinclude", '-I{file("minilang/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}']
-LDFLAGS := old + ["-lgc", "-ldl", "-ljansson"]
+LDFLAGS := old + ["-lgc", "-ldl", "-lczmq", "-ljansson"]
 
 var Objects := [
 	file("server.o"),
