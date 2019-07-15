@@ -43,6 +43,7 @@ typedef struct client_t {
 } client_t;
 
 static stringmap_t Clients[1] = {STRINGMAP_INIT};
+static stringmap_t Watches[1] = {STRINGMAP_INIT};
 static stringmap_t Methods[1] = {STRINGMAP_INIT};
 
 static void datasets_serve(int Port) {
@@ -140,6 +141,34 @@ static json_t *method_dataset_open(client_t *Client, json_t *Argument) {
 	if (!Entry) return json_pack("{ss}", "errror", "invalid index");
 	Client->Dataset = Entry->Dataset;
 	return json_pack("{sisO}", "index", Index, "info", dataset_get_info(Entry->Dataset));
+}
+
+static json_t *method_dataset_close(client_t *Client, json_t *Argument) {
+
+}
+
+static json_t *method_column_list(client_t *Client, json_t *Argument) {
+
+}
+
+static json_t *method_column_create(client_t *Client, json_t *Argument) {
+
+}
+
+static json_t *method_column_open(client_t *Client, json_t *Argument) {
+
+}
+
+static json_t *method_column_close(client_t *Client, json_t *Argument) {
+
+}
+
+static json_t *method_column_values_set(client_t *Client, json_t *Argument) {
+
+}
+
+static json_t *method_column_values_get(client_t *Client, json_t *Argument) {
+
 }
 
 static stringmap_t Globals[1] = {STRINGMAP_INIT};
