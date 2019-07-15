@@ -39,6 +39,7 @@ static void datasets_load() {
 
 typedef struct client_t {
 	zframe_t *Frame;
+	dataset_t *Dataset;
 } client_t;
 
 static stringmap_t Clients[1] = {STRINGMAP_INIT};
@@ -122,7 +123,22 @@ static json_t *method_dataset_create(client_t *Client, json_t *Argument) {
 	char *Path;
 	asprintf(&Path, "%s/%d", DatasetPath, Index);
 	dataset_entry_t *Entry = Slot[0] = new(dataset_entry_t);
-	Entry->Dataset = dataset_create(Path, Name, Length);
+	Client->Dataset = Entry->Dataset = dataset_create(Path, Name, Length);
+	return json_pack("{sisO}", "index", Index, "info", dataset_get_info(Entry->Dataset));
+}
+
+static json_t *method_dataset_open(client_t *Client, json_t *Argument) {
+	int Index;
+	if (json_unpack(Argument, "{si}", "index", &Index)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	dataset_entry_t *Entry = DatasetEntries;
+	for (int I = 0; I < Index; ++I) {
+		if (!Entry) return json_pack("{ss}", "errror", "invalid index");
+		Entry = Entry->Next;
+	}
+	if (!Entry) return json_pack("{ss}", "errror", "invalid index");
+	Client->Dataset = Entry->Dataset;
 	return json_pack("{sisO}", "index", Index, "info", dataset_get_info(Entry->Dataset));
 }
 
@@ -181,6 +197,7 @@ int main(int Argc, char **Argv) {
 	if (DatasetPath) {
 		stringmap_insert(Methods, "dataset/list", method_dataset_list);
 		stringmap_insert(Methods, "dataset/create", method_dataset_create);
+		stringmap_insert(Methods, "dataset/open", method_dataset_open);
 		datasets_load();
 		datasets_serve(Port);
 	}
