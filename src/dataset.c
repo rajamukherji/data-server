@@ -33,7 +33,7 @@ struct column_t {
 	const ml_type_t *Type;
 	column_t *Next;
 	dataset_t *Dataset;
-	const char *Name;
+	const char *Name, *Id;
 	union {
 		void *Map;
 		struct {
@@ -50,8 +50,8 @@ struct column_t {
 struct dataset_t {
 	const ml_type_t *Type;
 	const char *Path, *Name, *InfoFile;
-	column_t *Columns;
 	json_t *Info;
+	stringmap_t Columns[1];
 	size_t Length;
 };
 
@@ -62,16 +62,32 @@ column_type_t column_get_type(column_t *Column) {
 	return Column->DataType;
 }
 
+const char *column_get_id(column_t *Column) {
+	return Column->Id;
+}
+
 size_t column_get_length(column_t *Column) {
 	return Column->Dataset->Length;
 }
 
+static void column_open(column_t *Column) {
+	char FileName[strlen(Column->Dataset->Path) + 10];
+	sprintf(FileName, "%s/%s", Column->Dataset->Path, Column->Id);
+	struct stat Stat[1];
+	if (stat(FileName, Stat)) return;
+	Column->Fd = open(FileName, O_RDWR, 0777);
+	Column->MapSize = Stat->st_size;
+	Column->Map = mmap(NULL, Column->MapSize, PROT_READ | PROT_WRITE, MAP_SHARED, Column->Fd, 0);
+}
+
 size_t column_string_get_length(column_t *Column, size_t Index) {
+	if (!Column->Map) column_open(Column);
 	if (Index >= Column->Dataset->Length) return 0;
 	return Column->Strings->Entries[Index].Length;
 }
 
 void column_string_get_value(column_t *Column, size_t Index, char *Buffer) {
+	if (!Column->Map) column_open(Column);
 	if (Index >= Column->Dataset->Length) return;
 	string_node_t *Nodes = (string_node_t *)(Column->Strings->Entries + Column->Dataset->Length);
 	int32_t Length = Column->Strings->Entries[Index].Length;
@@ -87,6 +103,7 @@ void column_string_get_value(column_t *Column, size_t Index, char *Buffer) {
 }
 
 void column_string_set(column_t *Column, size_t Index, const char *Value, int Length) {
+	if (!Column->Map) column_open(Column);
 	if (Index >= Column->Dataset->Length) return;
 	string_node_t *Nodes = (string_node_t *)(Column->Strings->Entries + Column->Dataset->Length);
 	int OldLength = Column->Strings->Entries[Index].Length;
@@ -117,6 +134,7 @@ void column_string_set(column_t *Column, size_t Index, const char *Value, int Le
 		if (UseCount > FreeCount) {
 			int Shortfall = UseCount - FreeCount;
 			size_t MapSize = Column->MapSize + Shortfall * sizeof(string_node_t);
+			msync(Column->Map, Column->MapSize, MS_SYNC);
 			ftruncate(Column->Fd, MapSize);
 			Column->Map = mremap(Column->Map, Column->MapSize, MapSize, MREMAP_MAYMOVE);
 			Nodes = (string_node_t *)(Column->Strings->Entries + Column->Dataset->Length);
@@ -165,24 +183,25 @@ void column_string_set(column_t *Column, size_t Index, const char *Value, int Le
 }
 
 double column_real_get(column_t *Column, size_t Index) {
+	if (!Column->Map) column_open(Column);
 	return Column->Reals[Index];
 }
 
 void column_real_set(column_t *Column, size_t Index, double Value) {
+	if (!Column->Map) column_open(Column);
 	Column->Reals[Index] = Value;
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
 }
 
 dataset_t *dataset_create(const char *Path, const char *Name, size_t Length) {
 	printf("Creating dataset: %s with %d entries at %s\n", Name, Length, Path);
-	if (mkdir(Path, 0777)) return NULL;
 	dataset_t *Dataset = new(dataset_t);
 	Dataset->Type = DatasetT;
 	Dataset->Path = Path;
 	Dataset->Name = Name;
 	Dataset->Length = Length;
 	asprintf((char **)&Dataset->InfoFile, "%s/info.json", Path);
-	Dataset->Info = json_pack("{sssis[]}", "name", Name, "length", Length, "columns");
+	Dataset->Info = json_pack("{sssis{}}", "name", Name, "length", Length, "columns");
 	dataset_column_create(Dataset, "image", COLUMN_STRING);
 	return Dataset;
 }
@@ -200,13 +219,15 @@ dataset_t *dataset_open(const char *Path) {
 	}
 	json_t *ColumnsJson;
 	json_unpack(Dataset->Info, "{sssiso}", "name", &Dataset->Name, "length", &Dataset->Length, "columns", &ColumnsJson);
-	column_t **Slot = &Dataset->Columns;
-	for (int I = 0; I < json_array_size(ColumnsJson); ++I) {
-		column_t *Column = Slot[0] = new(column_t);
+	json_t *ColumnJson;
+	const char *Id;
+	json_object_foreach(ColumnsJson, Id, ColumnJson) {
+		column_t *Column = new(column_t);
 		Column->Type = ColumnT;
 		Column->Dataset = Dataset;
-		json_unpack(json_array_get(ColumnsJson, I), "{sssi}", "name", &Column->Name, "type", &Column->DataType);
-		Slot = &Column->Next;
+		Column->Id = Id;
+		json_unpack(ColumnJson, "{sssi}", "name", &Column->Name, "type", &Column->DataType);
+		stringmap_insert(Dataset->Columns, Id, Column);
 	}
 	return Dataset;
 }
@@ -220,40 +241,31 @@ size_t dataset_get_length(dataset_t *Dataset) {
 }
 
 size_t dataset_get_column_count(dataset_t *Dataset) {
-	size_t Index = 0;
-	column_t **Slot = &Dataset->Columns;
-	while (Slot[0]) {
-		Slot = &Slot[0]->Next;
-		++Index;
-	}
-	return Index;
+	return Dataset->Columns->Size;
 }
 
-column_type_t dataset_get_column_type(dataset_t *Dataset, size_t Index) {
-	column_t *Column = Dataset->Columns;
-	while (Index > 0) { --Index; Column = Column->Next; }
+column_type_t dataset_get_column_type(dataset_t *Dataset, const char *Id) {
+	column_t *Column = stringmap_search(Dataset->Columns, Id);
+	if (!Column) return 0;
 	return Column->DataType;
 }
 
-const char *dataset_get_column_name(dataset_t *Dataset, size_t Index) {
-	column_t *Column = Dataset->Columns;
-	while (Index > 0) { --Index; Column = Column->Next; }
+const char *dataset_get_column_name(dataset_t *Dataset, const char *Id) {
+	column_t *Column = stringmap_search(Dataset->Columns, Id);
+	if (!Column) return NULL;
 	return Column->Name;
 }
 
 column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_type_t Type) {
-	size_t Index = 0;
-	column_t **Slot = &Dataset->Columns;
-	while (Slot[0]) {
-		Slot = &Slot[0]->Next;
-		++Index;
-	}
-	column_t *Column = Slot[0] = new(column_t);
+	column_t *Column = new(column_t);
 	Column->Type = ColumnT;
 	Column->Dataset = Dataset;
 	char FileName[strlen(Dataset->Path) + 10];
-	sprintf(FileName, "%s/%d", Dataset->Path, Index);
-	Column->Fd = open(FileName, O_RDWR | O_CREAT, 0777);
+	char *Id = stpcpy(FileName, Dataset->Path);
+	strcpy(Id, "/XXXXXX");
+	++Id;
+	Column->Fd = mkstemp(FileName);
+	Column->Id = GC_strdup(Id);
 	Column->Name = Name;
 	Column->DataType = Type;
 	switch (Type) {
@@ -273,25 +285,18 @@ column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_typ
 		break;
 	}
 	}
+	stringmap_insert(Dataset->Columns, Column->Id, Column);
 	json_t *ColumnsJson = json_object_get(Dataset->Info, "columns");
-	json_array_append(ColumnsJson, json_pack("{sssi}", "name", Name, "type", Type));
+	json_object_set(ColumnsJson, Column->Id, json_pack("{sssi}", "name", Name, "type", Type));
 	json_dump_file(Dataset->Info, Dataset->InfoFile, 0);
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
 	return Column;
 }
 
-column_t *dataset_column_open(dataset_t *Dataset, size_t Index) {
-	column_t *Column = Dataset->Columns;
-	while (Index > 0) { --Index; Column = Column->Next; }
-	if (!Column->Map) {
-		char FileName[strlen(Dataset->Path) + 10];
-		sprintf(FileName, "%s/%d", Dataset->Path, Index);
-		struct stat Stat[1];
-		if (stat(FileName, Stat)) return NULL;
-		Column->Fd = open(FileName, O_RDWR, 0777);
-		Column->MapSize = Stat->st_size;
-		Column->Map = mmap(NULL, Column->MapSize, PROT_READ | PROT_WRITE, MAP_SHARED, Column->Fd, 0);
-	}
+column_t *dataset_column_open(dataset_t *Dataset, const char *Id) {
+	column_t *Column = stringmap_search(Dataset->Columns, Id);
+	if (!Column) return NULL;
+	if (!Column->Map) column_open(Column);
 	return Column;
 }
 
@@ -326,8 +331,7 @@ static ml_value_t *ml_dataset_column_count(void *Data, int Count, ml_value_t **A
 
 static ml_value_t *ml_dataset_column_open(void *Data, int Count, ml_value_t **Args) {
 	dataset_t *Dataset = (dataset_t *)Args[0];
-	int Index = ml_integer_value(Args[1]);
-	return (ml_value_t *)dataset_column_open(Dataset, Index);
+	return (ml_value_t *)dataset_column_open(Dataset, ml_string_value(Args[1]));
 }
 
 static ml_value_t *ml_dataset_column_create(void *Data, int Count, ml_value_t **Args) {
@@ -417,7 +421,7 @@ void dataset_init(stringmap_t *Globals) {
 	stringmap_insert(Globals, "COLUMN_REAL", ml_integer(COLUMN_REAL));
 	stringmap_insert(Globals, "COLUMN_STRING", ml_integer(COLUMN_STRING));
 	ml_method_by_name("column_count", NULL, ml_dataset_column_count, DatasetT, NULL);
-	ml_method_by_name("column_open", NULL, ml_dataset_column_open, DatasetT, MLIntegerT, NULL);
+	ml_method_by_name("column_open", NULL, ml_dataset_column_open, DatasetT, MLStringT, NULL);
 	ml_method_by_name("column_create", NULL, ml_dataset_column_create, DatasetT, MLStringT, MLIntegerT, NULL);
 	ml_method_by_name("string", NULL, ml_column_to_string, ColumnT, NULL);
 	ml_method_by_name("[]", NULL, ml_column_index, ColumnT, NULL);

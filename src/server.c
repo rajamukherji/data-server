@@ -10,31 +10,30 @@
 #include <czmq.h>
 #include <gc.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
 #include <jansson.h>
 #include "dataset.h"
 
-typedef struct dataset_entry_t dataset_entry_t;
-
-struct dataset_entry_t {
-	dataset_entry_t *Next;
-	dataset_t *Dataset;
-};
-
-static dataset_entry_t *DatasetEntries = 0;
-static const char *DatasetPath = 0;
+static stringmap_t Datasets[1] = {STRINGMAP_INIT};
+static const char *DatasetsPath = 0;
 
 static void datasets_load() {
-	dataset_entry_t **Slot = &DatasetEntries;
-	char DatasetPath[strlen(DatasetPath) + 10];
-	for (int Index = 0; ; ++Index) {
-		struct stat Stat[1];
-		sprintf(DatasetPath, "%s/%d", DatasetPath, Index);
-		if (stat(DatasetPath, Stat)) break;
-		if (!S_ISDIR(Stat->st_mode)) break;
-		dataset_entry_t *Entry = Slot[0] = new(dataset_entry_t);
-		Entry->Dataset = dataset_open(GC_strdup(DatasetPath));
-		Slot = &Entry->Next;
+	DIR *Dir = opendir(DatasetsPath);
+	if (!Dir) {
+		fprintf(stderr, "Error opening dataset path: %s\n", DatasetsPath);
+		exit(-1);
 	}
+	struct dirent *Entry;
+	while ((Entry = readdir(Dir))) {
+		if (Entry->d_name[0] != '.' && Entry->d_type == DT_DIR) {
+			char *Path;
+			asprintf(&Path, "%s/%s", DatasetsPath, Entry->d_name);
+			dataset_t *Dataset = dataset_open(Path);
+			if (Dataset) stringmap_insert(Datasets, GC_strdup(Entry->d_name), Dataset);
+		}
+	}
+	closedir(Dir);
 }
 
 typedef struct client_t {
@@ -99,13 +98,14 @@ static void datasets_serve(int Port) {
 	}
 }
 
+static int dataset_list_fn(const char *Id, dataset_t *Dataset, json_t *Result) {
+	json_array_append(Result, json_pack("{sssO}", "id", Id, "info", dataset_get_info(Dataset)));
+	return 0;
+}
+
 static json_t *method_dataset_list(client_t *Client, json_t *Argument) {
 	json_t *Result = json_array();
-	int Index = 0;
-	for (dataset_entry_t *Entry = DatasetEntries; Entry; Entry = Entry->Next) {
-		json_array_append(Result, json_pack("{sisO}", "index", Index, "info", dataset_get_info(Entry->Dataset)));
-		++Index;
-	}
+	stringmap_foreach(Datasets, Result, (void *)dataset_list_fn);
 	return Result;
 }
 
@@ -115,60 +115,147 @@ static json_t *method_dataset_create(client_t *Client, json_t *Argument) {
 	if (json_unpack(Argument, "{sssi}", "name", &Name, "length", &Length)) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
-	dataset_entry_t **Slot = &DatasetEntries;
-	int Index = 0;
-	while (Slot[0]) {
-		Slot = &Slot[0]->Next;
-		++Index;
-	}
 	char *Path;
-	asprintf(&Path, "%s/%d", DatasetPath, Index);
-	dataset_entry_t *Entry = Slot[0] = new(dataset_entry_t);
-	Client->Dataset = Entry->Dataset = dataset_create(Path, Name, Length);
-	return json_pack("{sisO}", "index", Index, "info", dataset_get_info(Entry->Dataset));
+	int PathLength = asprintf(&Path, "%s/XXXXXX", DatasetsPath);
+	mkdtemp(Path);
+	char *Id = Path + PathLength - 6;
+	dataset_t *Dataset = dataset_create(Path, Name, Length);
+	if (Dataset) {
+		stringmap_insert(Datasets, Id, Dataset);
+		Client->Dataset = Dataset;
+		return dataset_get_info(Dataset);
+	} else {
+		return json_pack("{ss}", "error", "failed to create dataset");
+	}
+
 }
 
 static json_t *method_dataset_open(client_t *Client, json_t *Argument) {
-	int Index;
-	if (json_unpack(Argument, "{si}", "index", &Index)) {
+	const char *Id;
+	if (json_unpack(Argument, "{ss}", "id", &Id)) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
-	dataset_entry_t *Entry = DatasetEntries;
-	for (int I = 0; I < Index; ++I) {
-		if (!Entry) return json_pack("{ss}", "errror", "invalid index");
-		Entry = Entry->Next;
-	}
-	if (!Entry) return json_pack("{ss}", "errror", "invalid index");
-	Client->Dataset = Entry->Dataset;
-	return json_pack("{sisO}", "index", Index, "info", dataset_get_info(Entry->Dataset));
+	dataset_t *Dataset = stringmap_search(Datasets, Id);
+	if (!Dataset) return json_pack("{ss}", "errror", "invalid id");
+	Client->Dataset = Dataset;
+	return dataset_get_info(Dataset);
 }
 
 static json_t *method_dataset_close(client_t *Client, json_t *Argument) {
 
 }
 
-static json_t *method_column_list(client_t *Client, json_t *Argument) {
-
+static json_t *method_dataset_info(client_t *Client, json_t *Argument) {
+	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	return dataset_get_info(Client->Dataset);
 }
 
 static json_t *method_column_create(client_t *Client, json_t *Argument) {
-
+	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	const char *Name, *TypeString;
+	if (json_unpack(Argument, "{sssi}", "name", &Name, "type", &TypeString)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	column_type_t Type;
+	if (!strcmp(TypeString, "string")) {
+		Type = COLUMN_STRING;
+	} else if (!strcmp(TypeString, "real")) {
+		Type = COLUMN_REAL;
+	} else {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	column_t *Column = dataset_column_create(Client->Dataset, Name, Type);
+	return json_pack("{si}", "id", column_get_id(Column));
 }
 
 static json_t *method_column_open(client_t *Client, json_t *Argument) {
-
+	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	const char *Id;
+	if (json_unpack(Argument, "{ss}", "column", &Id)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	column_t *Column = dataset_column_open(Client->Dataset, Id);
+	if (!Column) return json_pack("{ss}", "error", "invalid id");
+	return json_pack("{si}", "id", column_get_id(Column));
 }
 
 static json_t *method_column_close(client_t *Client, json_t *Argument) {
-
 }
 
 static json_t *method_column_values_set(client_t *Client, json_t *Argument) {
-
+	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	const char *Id;
+	json_t *Indices, *Values;
+	if (json_unpack(Argument, "{sssoso}", "column", &Id, "indices", &Indices, "values", &Values)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	if (!json_is_array(Values) || !json_is_array(Indices)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	size_t Count = json_array_size(Values);
+	if (Count != json_array_size(Indices)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	column_t *Column = dataset_column_open(Client->Dataset, Id);
+	if (!Column) return json_pack("{ss}", "error", "invalid id");
+	switch (column_get_type(Column)) {
+	case COLUMN_REAL: {
+		for (size_t I = 0; I < Count; ++I) {
+			int Index = json_integer_value(json_array_get(Indices, I));
+			double Value = json_number_value(json_array_get(Values, I));
+			column_real_set(Column, Index, Value);
+		}
+		break;
+	}
+	case COLUMN_STRING: {
+		for (size_t I = 0; I < Count; ++I) {
+			int Index = json_integer_value(json_array_get(Indices, I));
+			json_t *String = json_array_get(Values, I);
+			const char *Value = json_string_value(String);
+			int Length = json_string_length(String);
+			column_string_set(Column, Index, Value, Length);
+		}
+		break;
+	}
+	}
+	return json_null();
 }
 
 static json_t *method_column_values_get(client_t *Client, json_t *Argument) {
-
+	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	const char *Id;
+	json_t *Indices;
+	if (json_unpack(Argument, "{ssso}", "column", &Id, "indices", &Indices)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	if (!json_is_array(Indices)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	column_t *Column = dataset_column_open(Client->Dataset, Id);
+	if (!Column) return json_pack("{ss}", "error", "invalid id");
+	json_t *Values = json_array();
+	size_t Count = json_array_size(Indices);
+	switch (column_get_type(Column)) {
+	case COLUMN_REAL: {
+		for (size_t I = 0; I < Count; ++I) {
+			int Index = json_integer_value(json_array_get(Indices, I));
+			json_array_append(Values, json_real(column_real_get(Column, Index)));
+		}
+		break;
+	}
+	case COLUMN_STRING: {
+		for (size_t I = 0; I < Count; ++I) {
+			int Index = json_integer_value(json_array_get(Indices, I));
+			int Length = column_string_get_length(Column, Index);
+			char *Value = GC_malloc_atomic(Length + 1);
+			column_string_get_value(Column, Index, Value);
+			Value[Length] = 0;
+			json_array_append(Values, json_string(Value));
+		}
+		break;
+	}
+	}
+	return Values;
 }
 
 static stringmap_t Globals[1] = {STRINGMAP_INIT};
@@ -220,13 +307,18 @@ int main(int Argc, char **Argv) {
 				}
 			}
 		} else {
-			DatasetPath = Argv[I];
+			DatasetsPath = Argv[I];
 		}
 	}
-	if (DatasetPath) {
+	if (DatasetsPath) {
 		stringmap_insert(Methods, "dataset/list", method_dataset_list);
 		stringmap_insert(Methods, "dataset/create", method_dataset_create);
 		stringmap_insert(Methods, "dataset/open", method_dataset_open);
+		stringmap_insert(Methods, "dataset/info", method_dataset_info);
+		stringmap_insert(Methods, "column/create", method_column_create);
+		stringmap_insert(Methods, "column/open", method_column_open);
+		stringmap_insert(Methods, "column/values/set", method_column_values_set);
+		stringmap_insert(Methods, "column/values/get", method_column_values_get);
 		datasets_load();
 		datasets_serve(Port);
 	}
