@@ -20,6 +20,11 @@ void column_string_set(column_t *Column, size_t Index, const char *Value, int Le
 double column_real_get(column_t *Column, size_t Index);
 void column_real_set(column_t *Column, size_t Index, double Value);
 
+typedef void (*column_callback_t)(column_t *Column, int Index, void *Data);
+
+void column_watcher_add(column_t *Column, void *Data, column_callback_t Callback);
+void column_watcher_remove(column_t *Column, void *Data);
+
 typedef struct dataset_t dataset_t;
 
 dataset_t *dataset_create(const char *Path, const char *Name, size_t Length);

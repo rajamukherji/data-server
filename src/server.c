@@ -37,17 +37,18 @@ static void datasets_load() {
 }
 
 typedef struct client_t {
+	const char *Id;
 	zframe_t *Frame;
 	dataset_t *Dataset;
 } client_t;
 
 static stringmap_t Clients[1] = {STRINGMAP_INIT};
-static stringmap_t Watches[1] = {STRINGMAP_INIT};
 static stringmap_t Methods[1] = {STRINGMAP_INIT};
+static zsock_t *Socket;
 
 static void datasets_serve(int Port) {
 	static char HexDigits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
-	zsock_t *Socket = zsock_new_router(NULL);
+	Socket = zsock_new_router(NULL);
 	zsock_bind(Socket, "tcp://*:%d", Port);
 	for (;;) {
 		zmsg_t *RequestMsg = zmsg_recv(Socket);
@@ -65,7 +66,8 @@ static void datasets_serve(int Port) {
 		client_t *Client = stringmap_search(Clients, ClientId);
 		if (!Client) {
 			Client = new(client_t);
-			stringmap_insert(Clients, GC_strdup(ClientId), Client);
+			Client->Id = GC_strdup(ClientId);
+			stringmap_insert(Clients, Client->Id, Client);
 			Client->Frame = zframe_dup(ClientFrame);
 		}
 		zframe_t *RequestFrame = zmsg_pop(RequestMsg);
@@ -144,7 +146,8 @@ static json_t *method_dataset_open(client_t *Client, json_t *Argument) {
 }
 
 static json_t *method_dataset_close(client_t *Client, json_t *Argument) {
-
+	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	return json_null();
 }
 
 static json_t *method_dataset_info(client_t *Client, json_t *Argument) {
@@ -170,6 +173,15 @@ static json_t *method_column_create(client_t *Client, json_t *Argument) {
 	return json_pack("{ss}", "id", column_get_id(Column));
 }
 
+static void column_client_watch_fn(column_t *Column, int Index, client_t *Client) {
+	zframe_t *ClientFrame = zframe_dup(Client->Frame);
+	zmsg_t *AlertMsg = zmsg_new();
+	zmsg_append(AlertMsg, &ClientFrame);
+	zmsg_addstr(AlertMsg, "[0]");
+	zmsg_print(AlertMsg);
+	zmsg_send(&AlertMsg, Socket);
+}
+
 static json_t *method_column_open(client_t *Client, json_t *Argument) {
 	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
 	const char *Id;
@@ -178,10 +190,20 @@ static json_t *method_column_open(client_t *Client, json_t *Argument) {
 	}
 	column_t *Column = dataset_column_open(Client->Dataset, Id);
 	if (!Column) return json_pack("{ss}", "error", "invalid id");
+	column_watcher_add(Column, Client, (column_callback_t)column_client_watch_fn);
 	return json_pack("{si}", "id", column_get_id(Column));
 }
 
 static json_t *method_column_close(client_t *Client, json_t *Argument) {
+	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	const char *Id;
+	if (json_unpack(Argument, "{ss}", "column", &Id)) {
+		return json_pack("{ss}", "error", "invalid arguments");
+	}
+	column_t *Column = dataset_column_open(Client->Dataset, Id);
+	if (!Column) return json_pack("{ss}", "error", "invalid id");
+	column_watcher_remove(Column, Client);
+	return json_null();
 }
 
 static json_t *method_column_values_set(client_t *Client, json_t *Argument) {
@@ -316,9 +338,11 @@ int main(int Argc, char **Argv) {
 		stringmap_insert(Methods, "dataset/list", method_dataset_list);
 		stringmap_insert(Methods, "dataset/create", method_dataset_create);
 		stringmap_insert(Methods, "dataset/open", method_dataset_open);
+		stringmap_insert(Methods, "dataset/close", method_dataset_close);
 		stringmap_insert(Methods, "dataset/info", method_dataset_info);
 		stringmap_insert(Methods, "column/create", method_column_create);
 		stringmap_insert(Methods, "column/open", method_column_open);
+		stringmap_insert(Methods, "column/close", method_column_close);
 		stringmap_insert(Methods, "column/values/set", method_column_values_set);
 		stringmap_insert(Methods, "column/values/get", method_column_values_get);
 		datasets_load();
