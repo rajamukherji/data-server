@@ -84,11 +84,13 @@ static void datasets_serve(int Port) {
 		}
 		printf("Method = %s\n", Method);
 		json_t *(*MethodFn)(client_t *, json_t *) = stringmap_search(Methods, Method);
-		if (!MethodFn) {
+		json_t *Result;
+		if (MethodFn) {
+			Result = MethodFn(Client, Argument);
+		} else {
 			fprintf(stderr, "Error: unknown method %s\n", Method);
-			continue;
+			Result = json_pack("{ss}", "error", "invalid method");
 		}
-		json_t *Result = MethodFn(Client, Argument);
 		zmsg_t *ResponseMsg = zmsg_new();
 		zmsg_append(ResponseMsg, &ClientFrame);
 		json_t *Response = json_pack("[io]", Index, Result);
@@ -153,7 +155,7 @@ static json_t *method_dataset_info(client_t *Client, json_t *Argument) {
 static json_t *method_column_create(client_t *Client, json_t *Argument) {
 	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
 	const char *Name, *TypeString;
-	if (json_unpack(Argument, "{sssi}", "name", &Name, "type", &TypeString)) {
+	if (json_unpack(Argument, "{ssss}", "name", &Name, "type", &TypeString)) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
 	column_type_t Type;
@@ -165,7 +167,7 @@ static json_t *method_column_create(client_t *Client, json_t *Argument) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
 	column_t *Column = dataset_column_create(Client->Dataset, Name, Type);
-	return json_pack("{si}", "id", column_get_id(Column));
+	return json_pack("{ss}", "id", column_get_id(Column));
 }
 
 static json_t *method_column_open(client_t *Client, json_t *Argument) {
