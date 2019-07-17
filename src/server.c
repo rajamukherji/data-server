@@ -40,6 +40,7 @@ typedef struct client_t {
 	const char *Id;
 	zframe_t *Frame;
 	dataset_t *Dataset;
+	json_t *Alerts;
 } client_t;
 
 static stringmap_t Clients[1] = {STRINGMAP_INIT};
@@ -69,6 +70,7 @@ static void datasets_serve(int Port) {
 			Client->Id = GC_strdup(ClientId);
 			stringmap_insert(Clients, Client->Id, Client);
 			Client->Frame = zframe_dup(ClientFrame);
+			Client->Alerts = json_array();
 		}
 		zframe_t *RequestFrame = zmsg_pop(RequestMsg);
 		json_error_t Error;
@@ -102,6 +104,25 @@ static void datasets_serve(int Port) {
 	}
 }
 
+static json_t *method_alerts_read(client_t *Client, json_t *Argument) {
+	json_t *Result = Client->Alerts;
+	Client->Alerts = json_array();
+	return Result;
+}
+
+static void client_alert(client_t *Client, json_t *Alert) {
+	int AlertNeeded = !json_array_size(Client->Alerts);
+	json_array_append(Client->Alerts, Alert);
+	if (AlertNeeded) {
+		zframe_t *ClientFrame = zframe_dup(Client->Frame);
+		zmsg_t *AlertMsg = zmsg_new();
+		zmsg_append(AlertMsg, &ClientFrame);
+		zmsg_addstr(AlertMsg, "[0]");
+		zmsg_print(AlertMsg);
+		zmsg_send(&AlertMsg, Socket);
+	}
+}
+
 static int dataset_list_fn(const char *Id, dataset_t *Dataset, json_t *Result) {
 	json_array_append(Result, json_pack("{sssO}", "id", Id, "info", dataset_get_info(Dataset)));
 	return 0;
@@ -124,14 +145,11 @@ static json_t *method_dataset_create(client_t *Client, json_t *Argument) {
 	mkdtemp(Path);
 	char *Id = Path + PathLength - 6;
 	dataset_t *Dataset = dataset_create(Path, Name, Length);
-	if (Dataset) {
-		stringmap_insert(Datasets, Id, Dataset);
-		Client->Dataset = Dataset;
-		return dataset_get_info(Dataset);
-	} else {
-		return json_pack("{ss}", "error", "failed to create dataset");
-	}
-
+	if (!Dataset) return json_pack("{ss}", "error", "failed to create dataset");
+	stringmap_insert(Datasets, Id, Dataset);
+	Client->Dataset = Dataset;
+	dataset_watcher_add(Dataset, Client->Id, Client);
+	return dataset_get_info(Dataset);
 }
 
 static json_t *method_dataset_open(client_t *Client, json_t *Argument) {
@@ -142,17 +160,37 @@ static json_t *method_dataset_open(client_t *Client, json_t *Argument) {
 	dataset_t *Dataset = stringmap_search(Datasets, Id);
 	if (!Dataset) return json_pack("{ss}", "errror", "invalid id");
 	Client->Dataset = Dataset;
+	dataset_watcher_add(Dataset, Client->Id, Client);
 	return dataset_get_info(Dataset);
 }
 
 static json_t *method_dataset_close(client_t *Client, json_t *Argument) {
 	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
+	dataset_watcher_remove(Client->Dataset, Client->Id);
+	Client->Dataset = NULL;
 	return json_null();
 }
 
 static json_t *method_dataset_info(client_t *Client, json_t *Argument) {
 	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
 	return dataset_get_info(Client->Dataset);
+}
+
+typedef struct alert_column_create_t {
+	client_t *Cause;
+	dataset_t *Dataset;
+	column_t *Column;
+} alert_column_create_t;
+
+static int alert_column_create(const char *Id, client_t *Client, alert_column_create_t *Alert) {
+	if (Client != Alert->Cause && Client->Dataset == Alert->Dataset) {
+		client_alert(Client, json_pack("[ssO]",
+			"column/created",
+			column_get_id(Alert->Column),
+			dataset_get_column_info(Alert->Dataset, column_get_id(Alert->Column))
+		));
+	}
+	return 0;
 }
 
 static json_t *method_column_create(client_t *Client, json_t *Argument) {
@@ -170,16 +208,11 @@ static json_t *method_column_create(client_t *Client, json_t *Argument) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
 	column_t *Column = dataset_column_create(Client->Dataset, Name, Type);
+	if (!Column) if (!Column) return json_pack("{ss}", "error", "failed to create column");
+	column_watcher_add(Column, Client->Id, Client);
+	alert_column_create_t Alert[1] = {{Client, Client->Dataset, Column}};
+	dataset_watcher_foreach(Client->Dataset, Alert, (void *)alert_column_create);
 	return json_pack("{ss}", "id", column_get_id(Column));
-}
-
-static void column_client_watch_fn(column_t *Column, int Index, client_t *Client) {
-	zframe_t *ClientFrame = zframe_dup(Client->Frame);
-	zmsg_t *AlertMsg = zmsg_new();
-	zmsg_append(AlertMsg, &ClientFrame);
-	zmsg_addstr(AlertMsg, "[0]");
-	zmsg_print(AlertMsg);
-	zmsg_send(&AlertMsg, Socket);
 }
 
 static json_t *method_column_open(client_t *Client, json_t *Argument) {
@@ -190,8 +223,8 @@ static json_t *method_column_open(client_t *Client, json_t *Argument) {
 	}
 	column_t *Column = dataset_column_open(Client->Dataset, Id);
 	if (!Column) return json_pack("{ss}", "error", "invalid id");
-	column_watcher_add(Column, Client, (column_callback_t)column_client_watch_fn);
-	return json_pack("{si}", "id", column_get_id(Column));
+	column_watcher_add(Column, Client->Id, Client);
+	return json_pack("{ss}", "id", column_get_id(Column));
 }
 
 static json_t *method_column_close(client_t *Client, json_t *Argument) {
@@ -202,8 +235,26 @@ static json_t *method_column_close(client_t *Client, json_t *Argument) {
 	}
 	column_t *Column = dataset_column_open(Client->Dataset, Id);
 	if (!Column) return json_pack("{ss}", "error", "invalid id");
-	column_watcher_remove(Column, Client);
+	column_watcher_remove(Column, Client->Id);
 	return json_null();
+}
+
+typedef struct alert_column_values_set_t {
+	client_t *Cause;
+	dataset_t *Dataset;
+	column_t *Column;
+	json_t *Indices, *Values;
+} alert_column_values_set_t;
+
+static int alert_column_values_set(const char *Id, client_t *Client, alert_column_values_set_t *Alert) {
+	if (Client != Alert->Cause && Client->Dataset == Alert->Dataset) {
+		client_alert(Client, json_pack("[ssOO]",
+			"column/values/set",
+			column_get_id(Alert->Column),
+			Alert->Indices, Alert->Values
+		));
+	}
+	return 0;
 }
 
 static json_t *method_column_values_set(client_t *Client, json_t *Argument) {
@@ -242,6 +293,8 @@ static json_t *method_column_values_set(client_t *Client, json_t *Argument) {
 		break;
 	}
 	}
+	alert_column_values_set_t Alert[1] = {{Client, Client->Dataset, Column, Indices, Values}};
+	column_watcher_foreach(Column, Alert, (void *)alert_column_values_set);
 	return json_null();
 }
 
@@ -335,6 +388,7 @@ int main(int Argc, char **Argv) {
 		}
 	}
 	if (DatasetsPath) {
+		stringmap_insert(Methods, "alerts/read", method_alerts_read);
 		stringmap_insert(Methods, "dataset/list", method_dataset_list);
 		stringmap_insert(Methods, "dataset/create", method_dataset_create);
 		stringmap_insert(Methods, "dataset/open", method_dataset_open);

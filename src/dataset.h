@@ -20,10 +20,9 @@ void column_string_set(column_t *Column, size_t Index, const char *Value, int Le
 double column_real_get(column_t *Column, size_t Index);
 void column_real_set(column_t *Column, size_t Index, double Value);
 
-typedef void (*column_callback_t)(column_t *Column, int Index, void *Data);
-
-void column_watcher_add(column_t *Column, void *Data, column_callback_t Callback);
-void column_watcher_remove(column_t *Column, void *Data);
+void column_watcher_add(column_t *Column, const char *Key, void *Value);
+void column_watcher_remove(column_t *Column, const char *Key);
+void column_watcher_foreach(column_t *Column, void *Data, int (*Callback)(const char *, void *, void *));
 
 typedef struct dataset_t dataset_t;
 
@@ -36,9 +35,14 @@ size_t dataset_get_length(dataset_t *Dataset);
 size_t dataset_get_column_count(dataset_t *Dataset);
 column_type_t dataset_get_column_type(dataset_t *Dataset, const char *Id);
 const char *dataset_get_column_name(dataset_t *Dataset, const char *Id);
+json_t *dataset_get_column_info(dataset_t *Dataset, const char *Id);
 
 column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_type_t Type);
 column_t *dataset_column_open(dataset_t *Dataset, const char *Id);
+
+void dataset_watcher_add(dataset_t *Dataset, const char *Key, void *Value);
+void dataset_watcher_remove(dataset_t *Dataset, const char *Key);
+void dataset_watcher_foreach(dataset_t *Dataset, void *Data, int (*Callback)(const char *, void *, void *));
 
 void dataset_init(stringmap_t *Globals);
 

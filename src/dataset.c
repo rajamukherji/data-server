@@ -29,14 +29,6 @@ typedef union string_node_t {
 	char Large[16];
 } string_node_t;
 
-typedef struct column_callback_node_t column_callback_node_t;
-
-struct column_callback_node_t {
-	column_callback_node_t *Next;
-	column_callback_t Callback;
-	void *Data;
-};
-
 struct column_t {
 	const ml_type_t *Type;
 	column_t *Next;
@@ -50,7 +42,7 @@ struct column_t {
 		} *Strings;
 		double *Reals;
 	};
-	column_callback_node_t *Callbacks;
+	stringmap_t Watchers[1];
 	size_t MapSize;
 	column_type_t DataType;
 	int Fd;
@@ -61,6 +53,7 @@ struct dataset_t {
 	const char *Path, *Name, *InfoFile;
 	json_t *Info;
 	stringmap_t Columns[1];
+	stringmap_t Watchers[1];
 	size_t Length;
 };
 
@@ -189,9 +182,6 @@ void column_string_set(column_t *Column, size_t Index, const char *Value, int Le
 		memcpy(Node->Large, Value, Length);
 	}
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
-	for (column_callback_node_t *Node = Column->Callbacks; Node; Node = Node->Next) {
-		Node->Callback(Column, Index, Node->Data);
-	}
 }
 
 double column_real_get(column_t *Column, size_t Index) {
@@ -203,28 +193,18 @@ void column_real_set(column_t *Column, size_t Index, double Value) {
 	if (!Column->Map) column_open(Column);
 	Column->Reals[Index] = Value;
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
-	for (column_callback_node_t *Node = Column->Callbacks; Node; Node = Node->Next) {
-		Node->Callback(Column, Index, Node->Data);
-	}
 }
 
-void column_watcher_add(column_t *Column, void *Data, column_callback_t Callback) {
-	column_callback_node_t *Node = new(column_callback_node_t);
-	Node->Callback = Callback;
-	Node->Data = Data;
-	Node->Next = Column->Callbacks;
-	Column->Callbacks = Node;
+void column_watcher_add(column_t *Column, const char *Key, void *Value) {
+	stringmap_insert(Column->Watchers, Key, Value);
 }
 
-void column_watcher_remove(column_t *Column, void *Data) {
-	column_callback_node_t **Slot = &Column->Callbacks;
-	while (Slot[0]) {
-		if (Slot[0]->Data == Data) {
-			Slot[0] = Slot[0]->Next;
-			return;
-		}
-		Slot = &Slot[0]->Next;
-	}
+void column_watcher_remove(column_t *Column, const char *Key) {
+	stringmap_remove(Column->Watchers, Key);
+}
+
+void column_watcher_foreach(column_t *Column, void *Data, int (*Callback)(const char *, void *, void *)) {
+	stringmap_foreach(Column->Watchers, Data, Callback);
 }
 
 dataset_t *dataset_create(const char *Path, const char *Name, size_t Length) {
@@ -290,6 +270,10 @@ const char *dataset_get_column_name(dataset_t *Dataset, const char *Id) {
 	return Column->Name;
 }
 
+json_t *dataset_get_column_info(dataset_t *Dataset, const char *Id) {
+	return json_object_get(json_object_get(Dataset->Info, "columns"), Id);
+}
+
 column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_type_t Type) {
 	column_t *Column = new(column_t);
 	Column->Type = ColumnT;
@@ -332,6 +316,18 @@ column_t *dataset_column_open(dataset_t *Dataset, const char *Id) {
 	if (!Column) return NULL;
 	if (!Column->Map) column_open(Column);
 	return Column;
+}
+
+void dataset_watcher_add(dataset_t *Dataset, const char *Key, void *Value) {
+	stringmap_insert(Dataset->Watchers, Key, Value);
+}
+
+void dataset_watcher_remove(dataset_t *Dataset, const char *Key) {
+	stringmap_remove(Dataset->Watchers, Key);
+}
+
+void dataset_watcher_foreach(dataset_t *Dataset, void *Data, int (*Callback)(const char *, void *, void *)) {
+	stringmap_foreach(Dataset->Watchers, Data, Callback);
 }
 
 static ml_value_t *ml_dataset_open(void *Data, int Count, ml_value_t **Args) {
