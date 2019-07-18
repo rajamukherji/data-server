@@ -216,7 +216,9 @@ dataset_t *dataset_create(const char *Path, const char *Name, size_t Length) {
 	Dataset->Length = Length;
 	asprintf((char **)&Dataset->InfoFile, "%s/info.json", Path);
 	Dataset->Info = json_pack("{sssis{}}", "name", Name, "length", Length, "columns");
-	dataset_column_create(Dataset, "image", COLUMN_STRING);
+	column_t *Images = dataset_column_create(Dataset, "image", COLUMN_STRING);
+	json_object_set(Dataset->Info, "image", json_string(Images->Id));
+	json_dump_file(Dataset->Info, Dataset->InfoFile, 0);
 	return Dataset;
 }
 
@@ -240,7 +242,13 @@ dataset_t *dataset_open(const char *Path) {
 		Column->Type = ColumnT;
 		Column->Dataset = Dataset;
 		Column->Id = Id;
-		json_unpack(ColumnJson, "{sssi}", "name", &Column->Name, "type", &Column->DataType);
+		const char *DataType;
+		json_unpack(ColumnJson, "{ssss}", "name", &Column->Name, "type", &DataType);
+		if (!strcmp(DataType, "string")) {
+			Column->DataType = COLUMN_STRING;
+		} else if (!strcmp(DataType, "real")) {
+			Column->DataType = COLUMN_REAL;
+		}
 		stringmap_insert(Dataset->Columns, Id, Column);
 	}
 	return Dataset;
@@ -286,8 +294,10 @@ column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_typ
 	Column->Id = GC_strdup(Id);
 	Column->Name = Name;
 	Column->DataType = Type;
+	const char *DataType;
 	switch (Type) {
 	case COLUMN_STRING: {
+		DataType = "string";
 		Column->MapSize = sizeof(string_header_t) + Dataset->Length * sizeof(string_entry_t) + Dataset->Length * sizeof(string_node_t);
 		ftruncate(Column->Fd, Column->MapSize);
 		Column->Map = mmap(NULL, Column->MapSize, PROT_READ | PROT_WRITE, MAP_SHARED, Column->Fd, 0);
@@ -297,6 +307,7 @@ column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_typ
 		break;
 	}
 	case COLUMN_REAL: {
+		DataType = "real";
 		Column->MapSize = Dataset->Length * sizeof(double);
 		ftruncate(Column->Fd, Column->MapSize);
 		Column->Map = mmap(NULL, Column->MapSize, PROT_READ | PROT_WRITE, MAP_SHARED, Column->Fd, 0);
@@ -305,7 +316,8 @@ column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_typ
 	}
 	stringmap_insert(Dataset->Columns, Column->Id, Column);
 	json_t *ColumnsJson = json_object_get(Dataset->Info, "columns");
-	json_object_set(ColumnsJson, Column->Id, json_pack("{sssi}", "name", Name, "type", Type));
+
+	json_object_set(ColumnsJson, Column->Id, json_pack("{ssss}", "name", Name, "type", DataType));
 	json_dump_file(Dataset->Info, Dataset->InfoFile, 0);
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
 	return Column;
