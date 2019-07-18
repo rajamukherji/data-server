@@ -117,7 +117,7 @@ static void client_alert(client_t *Client, json_t *Alert) {
 		zframe_t *ClientFrame = zframe_dup(Client->Frame);
 		zmsg_t *AlertMsg = zmsg_new();
 		zmsg_append(AlertMsg, &ClientFrame);
-		zmsg_addstr(AlertMsg, "[0]");
+		zmsg_addstr(AlertMsg, "[0,null]");
 		zmsg_print(AlertMsg);
 		zmsg_send(&AlertMsg, Socket);
 	}
