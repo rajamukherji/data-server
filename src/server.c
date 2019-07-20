@@ -102,11 +102,11 @@ static void datasets_serve(int Port) {
 	}
 }
 
-static void client_alert(client_t *Client, json_t *Alert) {
+static void client_alert(client_t *Client, const char *Event, json_t *Details) {
 	zmsg_t *Msg = zmsg_new();
 	zframe_t *ClientFrame = zframe_dup(Client->Frame);
 	zmsg_append(Msg, &ClientFrame);
-	zmsg_addstr(Msg, json_dumps(json_pack("[io]", 0, Alert), JSON_COMPACT));
+	zmsg_addstr(Msg, json_dumps(json_pack("[iso]", 0, Event, Details), JSON_COMPACT));
 	zmsg_print(Msg);
 	zmsg_send(&Msg, Socket);
 }
@@ -172,8 +172,7 @@ typedef struct alert_column_create_t {
 
 static int alert_column_create(const char *Id, client_t *Client, alert_column_create_t *Alert) {
 	if (Client != Alert->Cause && Client->Dataset == Alert->Dataset) {
-		client_alert(Client, json_pack("[ssO]",
-			"column/created",
+		client_alert(Client, "column_created", json_pack("[sO]",
 			column_get_id(Alert->Column),
 			dataset_get_column_info(Alert->Dataset, column_get_id(Alert->Column))
 		));
@@ -237,8 +236,7 @@ typedef struct alert_column_values_set_t {
 
 static int alert_column_values_set(const char *Id, client_t *Client, alert_column_values_set_t *Alert) {
 	if (Client != Alert->Cause && Client->Dataset == Alert->Dataset) {
-		client_alert(Client, json_pack("[ssiOO]",
-			"column/values/set",
+		client_alert(Client, "column/values/set", json_pack("[siOO]",
 			column_get_id(Alert->Column),
 			Alert->Generation,
 			Alert->Indices, Alert->Values
