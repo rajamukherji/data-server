@@ -212,7 +212,7 @@ static json_t *method_column_open(client_t *Client, json_t *Argument) {
 	column_t *Column = dataset_column_open(Client->Dataset, Id);
 	if (!Column) return json_pack("{ss}", "error", "invalid id");
 	column_watcher_add(Column, Client->Id, Client);
-	return json_pack("{ss}", "id", column_get_id(Column));
+	return json_string(column_get_id(Column));
 }
 
 static json_t *method_column_close(client_t *Client, json_t *Argument) {

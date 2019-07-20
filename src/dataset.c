@@ -287,6 +287,13 @@ dataset_t *dataset_open(const char *Path) {
 		}
 		stringmap_insert(Dataset->Columns, Id, Column);
 	}
+	const char *ImageId = json_string_value(json_object_get(Dataset->Info, "image"));
+	column_t *Column = new(column_t);
+	Column->Type = ColumnT;
+	Column->Dataset = Dataset;
+	Column->Id = ImageId;
+	Column->DataType = COLUMN_STRING;
+	stringmap_insert(Dataset->Columns, ImageId, Column);
 	return Dataset;
 }
 
