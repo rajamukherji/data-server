@@ -17,12 +17,17 @@ size_t column_string_get_length(column_t *Column, size_t Index);
 void column_string_get_value(column_t *Column, size_t Index, char *Buffer);
 void column_string_set(column_t *Column, size_t Index, const char *Value, int Length);
 
+int column_string_extend_hint(column_t *Column, size_t Index, int Length);
+void column_string_extend(column_t *Column, int UseCount);
+
 double column_real_get(column_t *Column, size_t Index);
 void column_real_set(column_t *Column, size_t Index, double Value);
 
 void column_watcher_add(column_t *Column, const char *Key, void *Value);
 void column_watcher_remove(column_t *Column, const char *Key);
 void column_watcher_foreach(column_t *Column, void *Data, int (*Callback)(const char *, void *, void *));
+
+json_int_t column_generation_bump(column_t *Column);
 
 typedef struct dataset_t dataset_t;
 

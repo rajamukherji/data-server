@@ -40,7 +40,6 @@ typedef struct client_t {
 	const char *Id;
 	zframe_t *Frame;
 	dataset_t *Dataset;
-	json_t *Alerts;
 } client_t;
 
 static stringmap_t Clients[1] = {STRINGMAP_INIT};
@@ -70,7 +69,6 @@ static void datasets_serve(int Port) {
 			Client->Id = GC_strdup(ClientId);
 			stringmap_insert(Clients, Client->Id, Client);
 			Client->Frame = zframe_dup(ClientFrame);
-			Client->Alerts = json_array();
 		}
 		zframe_t *RequestFrame = zmsg_pop(RequestMsg);
 		json_error_t Error;
@@ -104,23 +102,13 @@ static void datasets_serve(int Port) {
 	}
 }
 
-static json_t *method_alerts_read(client_t *Client, json_t *Argument) {
-	json_t *Result = Client->Alerts;
-	Client->Alerts = json_array();
-	return Result;
-}
-
 static void client_alert(client_t *Client, json_t *Alert) {
-	int AlertNeeded = !json_array_size(Client->Alerts);
-	json_array_append(Client->Alerts, Alert);
-	if (AlertNeeded) {
-		zframe_t *ClientFrame = zframe_dup(Client->Frame);
-		zmsg_t *AlertMsg = zmsg_new();
-		zmsg_append(AlertMsg, &ClientFrame);
-		zmsg_addstr(AlertMsg, "[0,null]");
-		zmsg_print(AlertMsg);
-		zmsg_send(&AlertMsg, Socket);
-	}
+	zmsg_t *Msg = zmsg_new();
+	zframe_t *ClientFrame = zframe_dup(Client->Frame);
+	zmsg_append(Msg, &ClientFrame);
+	zmsg_addstr(Msg, json_dumps(json_pack("[io]", 0, Alert), JSON_COMPACT));
+	zmsg_print(Msg);
+	zmsg_send(&Msg, Socket);
 }
 
 static int dataset_list_fn(const char *Id, dataset_t *Dataset, json_t *Result) {
@@ -212,7 +200,7 @@ static json_t *method_column_create(client_t *Client, json_t *Argument) {
 	column_watcher_add(Column, Client->Id, Client);
 	alert_column_create_t Alert[1] = {{Client, Client->Dataset, Column}};
 	dataset_watcher_foreach(Client->Dataset, Alert, (void *)alert_column_create);
-	return json_pack("{ss}", "id", column_get_id(Column));
+	return json_string(column_get_id(Column));
 }
 
 static json_t *method_column_open(client_t *Client, json_t *Argument) {
@@ -244,13 +232,15 @@ typedef struct alert_column_values_set_t {
 	dataset_t *Dataset;
 	column_t *Column;
 	json_t *Indices, *Values;
+	json_int_t Generation;
 } alert_column_values_set_t;
 
 static int alert_column_values_set(const char *Id, client_t *Client, alert_column_values_set_t *Alert) {
 	if (Client != Alert->Cause && Client->Dataset == Alert->Dataset) {
-		client_alert(Client, json_pack("[ssOO]",
+		client_alert(Client, json_pack("[ssiOO]",
 			"column/values/set",
 			column_get_id(Alert->Column),
+			Alert->Generation,
 			Alert->Indices, Alert->Values
 		));
 	}
@@ -260,77 +250,137 @@ static int alert_column_values_set(const char *Id, client_t *Client, alert_colum
 static json_t *method_column_values_set(client_t *Client, json_t *Argument) {
 	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
 	const char *Id;
-	json_t *Indices, *Values;
-	if (json_unpack(Argument, "{sssoso}", "column", &Id, "indices", &Indices, "values", &Values)) {
+	json_t *Values;
+	if (json_unpack(Argument, "{ssso}", "column", &Id, "values", &Values)) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
-	if (!json_is_array(Values) || !json_is_array(Indices)) {
-		return json_pack("{ss}", "error", "invalid arguments");
-	}
-	size_t Count = json_array_size(Values);
-	if (Count != json_array_size(Indices)) {
+	if (!json_is_array(Values)) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
 	column_t *Column = dataset_column_open(Client->Dataset, Id);
 	if (!Column) return json_pack("{ss}", "error", "invalid id");
-	switch (column_get_type(Column)) {
-	case COLUMN_REAL: {
-		for (size_t I = 0; I < Count; ++I) {
-			int Index = json_integer_value(json_array_get(Indices, I));
-			double Value = json_number_value(json_array_get(Values, I));
-			column_real_set(Column, Index, Value);
+	json_t *Indices = json_object_get(Argument, "indices");
+	if (json_is_array(Indices)) {
+		size_t Count = json_array_size(Indices);
+		if (json_array_size(Values) != Count) return json_pack("{ss}", "error", "invalid arguments");
+		switch (column_get_type(Column)) {
+		case COLUMN_REAL: {
+			for (size_t I = 0; I < Count; ++I) {
+				int Index = json_integer_value(json_array_get(Indices, I));
+				double Value = json_number_value(json_array_get(Values, I));
+				column_real_set(Column, Index, Value);
+			}
+			break;
 		}
-		break;
-	}
-	case COLUMN_STRING: {
-		for (size_t I = 0; I < Count; ++I) {
-			int Index = json_integer_value(json_array_get(Indices, I));
-			json_t *String = json_array_get(Values, I);
-			const char *Value = json_string_value(String);
-			int Length = json_string_length(String);
-			column_string_set(Column, Index, Value, Length);
+		case COLUMN_STRING: {
+			int Required = 0;
+			for (size_t I = 0; I < Count; ++I) {
+				int Index = json_integer_value(json_array_get(Indices, I));
+				json_t *String = json_array_get(Values, I);
+				int Length = json_string_length(String);
+				Required += column_string_extend_hint(Column, Index, Length);
+			}
+			column_string_extend(Column, Required);
+			for (size_t I = 0; I < Count; ++I) {
+				int Index = json_integer_value(json_array_get(Indices, I));
+				json_t *String = json_array_get(Values, I);
+				const char *Value = json_string_value(String);
+				int Length = json_string_length(String);
+				column_string_set(Column, Index, Value, Length);
+			}
+			break;
 		}
-		break;
+		}
+		alert_column_values_set_t Alert[1] = {{
+			Client, Client->Dataset, Column,
+			Indices, Values, column_generation_bump(Column)
+		}};
+		column_watcher_foreach(Column, Alert, (void *)alert_column_values_set);
+		return json_integer(Alert->Generation);
+	} else {
+		size_t Length = json_array_size(Values);
+		if (Length != column_get_length(Column)) return json_pack("{ss}", "error", "invalid arguments");
+		switch (column_get_type(Column)) {
+		case COLUMN_REAL: {
+			for (size_t Index = 0; Index < Length; ++Index) {
+				double Value = json_number_value(json_array_get(Values, Index));
+				column_real_set(Column, Index, Value);
+			}
+			break;
+		}
+		case COLUMN_STRING: {
+			int Required = 0;
+			for (size_t Index = 0; Index < Length; ++Index) {
+				json_t *String = json_array_get(Values, Index);
+				int Length = json_string_length(String);
+				Required += column_string_extend_hint(Column, Index, Length);
+			}
+			column_string_extend(Column, Required);
+			for (size_t Index = 0; Index < Length; ++Index) {
+				json_t *String = json_array_get(Values, Index);
+				const char *Value = json_string_value(String);
+				int Length = json_string_length(String);
+				column_string_set(Column, Index, Value, Length);
+			}
+			break;
+		}
+		}
+		return json_null();
 	}
-	}
-	alert_column_values_set_t Alert[1] = {{Client, Client->Dataset, Column, Indices, Values}};
-	column_watcher_foreach(Column, Alert, (void *)alert_column_values_set);
-	return json_null();
 }
 
 static json_t *method_column_values_get(client_t *Client, json_t *Argument) {
 	if (!Client->Dataset) return json_pack("{ss}", "error", "no dataset open");
 	const char *Id;
-	json_t *Indices;
-	if (json_unpack(Argument, "{ssso}", "column", &Id, "indices", &Indices)) {
-		return json_pack("{ss}", "error", "invalid arguments");
-	}
-	if (!json_is_array(Indices)) {
+	if (json_unpack(Argument, "{ss}", "column", &Id)) {
 		return json_pack("{ss}", "error", "invalid arguments");
 	}
 	column_t *Column = dataset_column_open(Client->Dataset, Id);
 	if (!Column) return json_pack("{ss}", "error", "invalid id");
 	json_t *Values = json_array();
-	size_t Count = json_array_size(Indices);
-	switch (column_get_type(Column)) {
-	case COLUMN_REAL: {
-		for (size_t I = 0; I < Count; ++I) {
-			int Index = json_integer_value(json_array_get(Indices, I));
-			json_array_append(Values, json_real(column_real_get(Column, Index)));
+	json_t *Indices = json_object_get(Argument, "indices");
+	if (json_is_array(Indices)) {
+		size_t Count = json_array_size(Indices);
+		switch (column_get_type(Column)) {
+		case COLUMN_REAL: {
+			for (size_t I = 0; I < Count; ++I) {
+				int Index = json_integer_value(json_array_get(Indices, I));
+				json_array_append(Values, json_real(column_real_get(Column, Index)));
+			}
+			break;
 		}
-		break;
-	}
-	case COLUMN_STRING: {
-		for (size_t I = 0; I < Count; ++I) {
-			int Index = json_integer_value(json_array_get(Indices, I));
-			int Length = column_string_get_length(Column, Index);
-			char *Value = GC_malloc_atomic(Length + 1);
-			column_string_get_value(Column, Index, Value);
-			Value[Length] = 0;
-			json_array_append(Values, json_string(Value));
+		case COLUMN_STRING: {
+			for (size_t I = 0; I < Count; ++I) {
+				int Index = json_integer_value(json_array_get(Indices, I));
+				int Length = column_string_get_length(Column, Index);
+				char *Value = GC_malloc_atomic(Length + 1);
+				column_string_get_value(Column, Index, Value);
+				Value[Length] = 0;
+				json_array_append(Values, json_string(Value));
+			}
+			break;
 		}
-		break;
-	}
+		}
+	} else {
+		size_t Length = dataset_get_length(Client->Dataset);
+		switch (column_get_type(Column)) {
+		case COLUMN_REAL: {
+			for (size_t Index = 0; Index < Length; ++Index) {
+				json_array_append(Values, json_real(column_real_get(Column, Index)));
+			}
+			break;
+		}
+		case COLUMN_STRING: {
+			for (size_t Index = 0; Index < Length; ++Index) {
+				int Length = column_string_get_length(Column, Index);
+				char *Value = GC_malloc_atomic(Length + 1);
+				column_string_get_value(Column, Index, Value);
+				Value[Length] = 0;
+				json_array_append(Values, json_string(Value));
+			}
+			break;
+		}
+		}
 	}
 	return Values;
 }
@@ -388,7 +438,6 @@ int main(int Argc, char **Argv) {
 		}
 	}
 	if (DatasetsPath) {
-		stringmap_insert(Methods, "alerts/read", method_alerts_read);
 		stringmap_insert(Methods, "dataset/list", method_dataset_list);
 		stringmap_insert(Methods, "dataset/create", method_dataset_create);
 		stringmap_insert(Methods, "dataset/open", method_dataset_open);

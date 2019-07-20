@@ -43,6 +43,7 @@ struct column_t {
 		double *Reals;
 	};
 	stringmap_t Watchers[1];
+	json_int_t Generation;
 	size_t MapSize;
 	column_type_t DataType;
 	int Fd;
@@ -89,7 +90,6 @@ size_t column_string_get_length(column_t *Column, size_t Index) {
 }
 
 void column_string_get_value(column_t *Column, size_t Index, char *Buffer) {
-	if (!Column->Map) column_open(Column);
 	if (Index >= Column->Dataset->Length) return;
 	string_node_t *Nodes = (string_node_t *)(Column->Strings->Entries + Column->Dataset->Length);
 	int32_t Length = Column->Strings->Entries[Index].Length;
@@ -105,7 +105,6 @@ void column_string_get_value(column_t *Column, size_t Index, char *Buffer) {
 }
 
 void column_string_set(column_t *Column, size_t Index, const char *Value, int Length) {
-	if (!Column->Map) column_open(Column);
 	if (Index >= Column->Dataset->Length) return;
 	string_node_t *Nodes = (string_node_t *)(Column->Strings->Entries + Column->Dataset->Length);
 	int OldLength = Column->Strings->Entries[Index].Length;
@@ -184,13 +183,46 @@ void column_string_set(column_t *Column, size_t Index, const char *Value, int Le
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
 }
 
+int column_string_extend_hint(column_t *Column, size_t Index, int Length) {
+	if (Index >= Column->Dataset->Length) return 0;
+	string_node_t *Nodes = (string_node_t *)(Column->Strings->Entries + Column->Dataset->Length);
+	int OldLength = Column->Strings->Entries[Index].Length;
+	int NumBlocksOld = 1 + (OldLength - 5) / 12;
+	if (NumBlocksOld < 1) NumBlocksOld = 1;
+	int NumBlocksNew = 1 + (Length - 5) / 12;
+	if (NumBlocksNew < 1) NumBlocksNew = 1;
+	return NumBlocksNew - NumBlocksOld;
+}
+
+void column_string_extend(column_t *Column, int Required) {
+	int FreeCount = Column->Strings->Header.FreeCount;
+	if (Required > FreeCount) {
+		int Shortfall = Required - FreeCount;
+		size_t MapSize = Column->MapSize + Shortfall * sizeof(string_node_t);
+		msync(Column->Map, Column->MapSize, MS_SYNC);
+		ftruncate(Column->Fd, MapSize);
+		Column->Map = mremap(Column->Map, Column->MapSize, MapSize, MREMAP_MAYMOVE);
+		string_node_t *Nodes = (string_node_t *)(Column->Strings->Entries + Column->Dataset->Length);
+		int32_t FreeEnd;
+		if (FreeCount > 0) {
+			FreeEnd = Column->Strings->Header.FreeStart;
+			while (--FreeCount > 0) FreeEnd = Nodes[FreeEnd].Link;
+			FreeEnd = Nodes[FreeEnd].Link = (Column->MapSize - sizeof(string_header_t) - Column->Dataset->Length * sizeof(string_entry_t)) / sizeof(string_node_t);
+		} else {
+			FreeEnd = (Column->MapSize - sizeof(string_header_t) - Column->Dataset->Length * sizeof(string_entry_t)) / sizeof(string_node_t);
+			Column->Strings->Header.FreeStart = FreeEnd;
+		}
+		while (--Shortfall > 0) FreeEnd = Nodes[FreeEnd].Link = FreeEnd + 1;
+		Column->MapSize = MapSize;
+		Column->Strings->Header.FreeCount = Required;
+	}
+}
+
 double column_real_get(column_t *Column, size_t Index) {
-	if (!Column->Map) column_open(Column);
 	return Column->Reals[Index];
 }
 
 void column_real_set(column_t *Column, size_t Index, double Value) {
-	if (!Column->Map) column_open(Column);
 	Column->Reals[Index] = Value;
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
 }
@@ -205,6 +237,10 @@ void column_watcher_remove(column_t *Column, const char *Key) {
 
 void column_watcher_foreach(column_t *Column, void *Data, int (*Callback)(const char *, void *, void *)) {
 	stringmap_foreach(Column->Watchers, Data, Callback);
+}
+
+json_int_t column_generation_bump(column_t *Column) {
+	return ++Column->Generation;
 }
 
 dataset_t *dataset_create(const char *Path, const char *Name, size_t Length) {
@@ -315,10 +351,11 @@ column_t *dataset_column_create(dataset_t *Dataset, const char *Name, column_typ
 	}
 	}
 	stringmap_insert(Dataset->Columns, Column->Id, Column);
-	json_t *ColumnsJson = json_object_get(Dataset->Info, "columns");
-
-	json_object_set(ColumnsJson, Column->Id, json_pack("{ssss}", "name", Name, "type", DataType));
-	json_dump_file(Dataset->Info, Dataset->InfoFile, 0);
+	if (json_object_get(Dataset->Info, "image")) {
+		json_t *ColumnsJson = json_object_get(Dataset->Info, "columns");
+		json_object_set(ColumnsJson, Column->Id, json_pack("{ssss}", "name", Name, "type", DataType));
+		json_dump_file(Dataset->Info, Dataset->InfoFile, 0);
+	}
 	msync(Column->Map, Column->MapSize, MS_ASYNC);
 	return Column;
 }
@@ -433,7 +470,6 @@ static ml_value_t *column_ref_assign(column_ref_t *Ref, ml_value_t *Value) {
 	return Value;
 }
 
-
 static ml_type_t ColumnRefT[1] = {{
 	MLTypeT,
 	MLAnyT, "column-ref",
@@ -455,6 +491,20 @@ static ml_value_t *ml_column_index(void *Data, int Count, ml_value_t **Args) {
 	return (ml_value_t *)ColumnRef;
 }
 
+static ml_value_t *ml_column_extend_hint(void *Data, int Count, ml_value_t **Args) {
+	column_t *Column = (column_t *)Args[0];
+	size_t Index = ml_integer_value(Args[1]);
+	int Length = ml_integer_value(Args[2]);
+	return ml_integer(column_string_extend_hint(Column, Index, Length));
+}
+
+static ml_value_t *ml_column_extend(void *Data, int Count, ml_value_t **Args) {
+	column_t *Column = (column_t *)Args[0];
+	int Required = ml_integer_value(Args[1]);
+	column_string_extend(Column, Required);
+	return Args[0];
+}
+
 void dataset_init(stringmap_t *Globals) {
 	DatasetT = ml_type(MLAnyT, "dataset");
 	ColumnT = ml_type(MLAnyT, "column");
@@ -467,4 +517,6 @@ void dataset_init(stringmap_t *Globals) {
 	ml_method_by_name("column_create", NULL, ml_dataset_column_create, DatasetT, MLStringT, MLIntegerT, NULL);
 	ml_method_by_name("string", NULL, ml_column_to_string, ColumnT, NULL);
 	ml_method_by_name("[]", NULL, ml_column_index, ColumnT, NULL);
+	ml_method_by_name("extend_hint", NULL, ml_column_extend_hint, ColumnT, MLIntegerT, MLIntegerT, NULL);
+	ml_method_by_name("extend", NULL, ml_column_extend, ColumnT, MLIntegerT, NULL);
 }
