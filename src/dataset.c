@@ -378,8 +378,14 @@ void dataset_watcher_add(dataset_t *Dataset, const char *Key, void *Value) {
 	stringmap_insert(Dataset->Watchers, Key, Value);
 }
 
+static int column_watcher_remove_fn(const char *Id, column_t *Column , const char *Key) {
+	stringmap_remove(Column->Watchers, Key);
+	return 0;
+}
+
 void dataset_watcher_remove(dataset_t *Dataset, const char *Key) {
 	stringmap_remove(Dataset->Watchers, Key);
+	stringmap_foreach(Dataset->Columns, (void *)Key, (void *)column_watcher_remove_fn);
 }
 
 void dataset_watcher_foreach(dataset_t *Dataset, void *Data, int (*Callback)(const char *, void *, void *)) {

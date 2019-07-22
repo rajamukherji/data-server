@@ -52,6 +52,7 @@ static void datasets_serve(int Port) {
 	zsock_bind(Socket, "tcp://*:%d", Port);
 	for (;;) {
 		zmsg_t *RequestMsg = zmsg_recv(Socket);
+		if (!RequestMsg) break;
 		zmsg_print(RequestMsg);
 		zframe_t *ClientFrame = zmsg_pop(RequestMsg);
 		size_t IdSize = zframe_size(ClientFrame);
@@ -100,6 +101,8 @@ static void datasets_serve(int Port) {
 		zmsg_print(ResponseMsg);
 		zmsg_send(&ResponseMsg, Socket);
 	}
+	zsock_destroy(&Socket);
+	// TODO: close datasets safely
 }
 
 static void client_alert(client_t *Client, const char *Event, json_t *Details) {
@@ -448,8 +451,8 @@ int main(int Argc, char **Argv) {
 		stringmap_insert(Methods, "column/values/get", method_column_values_get);
 		datasets_load();
 		datasets_serve(Port);
+	} else {
+		ml_console(global_get, Globals);
 	}
-
-	ml_console(global_get, Globals);
 	return 0;
 }
