@@ -73,7 +73,7 @@ end
 LIBMINILANG := subdir("minilang")."LIBMINILANG"
 
 file("whereami/src"):mkdir
-CFLAGS := old + ['-D_GNU_SOURCE', "-Iinclude", '-I{file("minilang/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}']
+CFLAGS := old + ['-I{file("minilang/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}']
 LDFLAGS := old + ["-lgc", "-ldl", "-lczmq", "-ljansson"]
 
 var Objects := [
