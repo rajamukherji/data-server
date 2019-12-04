@@ -70,7 +70,8 @@ CZMQ := meta("czmq"):scan("install")[ZEROMQ] => fun() do
 	ret [PATH/"lib/libczmq.a"]
 end
 
-file("minilang"):mkdir
+LIBMINILANG := subdir("minilang")."LIBMINILANG"
+
 file("whereami/src"):mkdir
 CFLAGS := old + ['-D_GNU_SOURCE', "-Iinclude", '-I{file("minilang/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}']
 LDFLAGS := old + ["-lgc", "-ldl", "-lczmq", "-ljansson"]
@@ -79,19 +80,8 @@ var Objects := [
 	file("server.o"),
 	file("dataset.o"),
 	file("libcsv.o"),
-	file("minilang/minilang.o"),
-	file("minilang/ml_compiler.o"),
-	file("minilang/ml_runtime.o"),
-	file("minilang/ml_types.o"),
-	file("minilang/ml_object.o"),
-	file("minilang/ml_file.o"),
-	file("minilang/ml_iterfns.o"),
-	file("minilang/sha256.o"),
-	file("minilang/stringmap.o"),
-	file("minilang/ml_console.o"),
-	file("minilang/linenoise.o"),
 	file("whereami/src/whereami.o")
 ]
 
-c_program(BIN_DIR/"data-server", Objects)
+c_program(BIN_DIR/"data-server", Objects, [LIBMINILANG])
 install(BIN_DIR/"data-server", PREFIX/"bin/data-server", "+x")

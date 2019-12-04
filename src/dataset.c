@@ -490,10 +490,7 @@ static ml_type_t ColumnRefT[1] = {{
 	ml_default_call,
 	(void *)column_ref_deref,
 	(void *)column_ref_assign,
-	ml_default_iterate,
-	ml_default_current,
-	ml_default_next,
-	ml_default_key
+	NULL, 0, 0
 }};
 
 static ml_value_t *ml_column_index(void *Data, int Count, ml_value_t **Args) {
