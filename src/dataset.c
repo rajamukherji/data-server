@@ -1,6 +1,6 @@
 #include "dataset.h"
-#include "minilang/minilang.h"
-#include "minilang/ml_macros.h"
+#include <minilang.h>
+#include <ml_macros.h>
 #include <gc.h>
 #include <stdint.h>
 #include <string.h>

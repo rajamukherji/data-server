@@ -3,7 +3,7 @@
 
 #include <stdlib.h>
 #include <jansson.h>
-#include "minilang/stringmap.h"
+#include <stringmap.h>
 
 typedef enum {COLUMN_INVALID, COLUMN_STRING, COLUMN_REAL} column_type_t;
 

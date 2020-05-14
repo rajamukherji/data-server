@@ -1,10 +1,10 @@
-#include "minilang/minilang.h"
-#include "minilang/ml_console.h"
-#include "minilang/ml_macros.h"
-#include "minilang/ml_file.h"
-#include "minilang/ml_object.h"
-#include "minilang/ml_iterfns.h"
-#include "minilang/stringmap.h"
+#include <minilang.h>
+#include <ml_console.h>
+#include <ml_macros.h>
+#include <ml_file.h>
+#include <ml_object.h>
+#include <ml_iterfns.h>
+#include <stringmap.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <czmq.h>
@@ -452,7 +452,7 @@ int main(int Argc, char **Argv) {
 		datasets_load();
 		datasets_serve(Port);
 	} else {
-		ml_console(global_get, Globals);
+		ml_console(global_get, Globals, "--> ", "... ");
 	}
 	return 0;
 }

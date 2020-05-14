@@ -70,10 +70,12 @@ CZMQ := meta("czmq"):scan("install")[ZEROMQ] => fun() do
 	ret [PATH/"lib/libczmq.a"]
 end
 
-LIBMINILANG := subdir("minilang")."LIBMINILANG"
+MINILANG_USEMATH := 1
+subdir("minilang")
+LIBMINILANG := context("/obj/minilang/obj")::LIBMINILANG
 
 file("whereami/src"):mkdir
-CFLAGS := old + ['-I{file("minilang/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}']
+CFLAGS := old + ['-I{file("minilang/src/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}']
 LDFLAGS := old + ["-lgc", "-ldl", "-lczmq", "-ljansson"]
 
 var Objects := [
