@@ -71,19 +71,20 @@ CZMQ := meta("czmq"):scan("install")[ZEROMQ] => fun() do
 end
 
 MINILANG_USEMATH := 1
-subdir("minilang")
-LIBMINILANG := context("/obj/minilang/obj")::LIBMINILANG
+
+let Minilang := subdir("minilang")
+
+Minilang::generate_init_files()
 
 file("whereami/src"):mkdir
-CFLAGS := old + ['-I{file("minilang/src/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}']
+CFLAGS := old + ['-I{file("minilang/src/minilang.h"):dirname}', '-I{file("whereami/src/whereami.h"):dirname}', '-I.']
 LDFLAGS := old + ["-lgc", "-ldl", "-lczmq", "-ljansson"]
 
 var Objects := [
 	file("server.o"),
 	file("dataset.o"),
-	file("libcsv.o"),
 	file("whereami/src/whereami.o")
 ]
 
-c_program(BIN_DIR/"data-server", Objects, [LIBMINILANG])
+c_program(BIN_DIR/"data-server", Objects, [Minilang::LIBMINILANG])
 install(BIN_DIR/"data-server", PREFIX/"bin/data-server", "+x")

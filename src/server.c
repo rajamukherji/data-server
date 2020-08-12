@@ -50,6 +50,7 @@ static void datasets_serve(int Port) {
 	static char HexDigits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 	Socket = zsock_new_router(NULL);
 	zsock_bind(Socket, "tcp://*:%d", Port);
+	printf("Data server listening on %s\n", zsock_endpoint(Socket));
 	for (;;) {
 		zmsg_t *RequestMsg = zmsg_recv(Socket);
 		if (!RequestMsg) break;
@@ -420,8 +421,8 @@ int main(int Argc, char **Argv) {
 	ml_file_init(Globals);
 	ml_object_init(Globals);
 	ml_iterfns_init(Globals);
-	stringmap_insert(Globals, "print", ml_function(0, print));
-	stringmap_insert(Globals, "error", ml_function(0, error));
+	stringmap_insert(Globals, "print", ml_cfunction(0, print));
+	stringmap_insert(Globals, "error", ml_cfunction(0, error));
 	dataset_init(Globals);
 
 	int Port = 9001;

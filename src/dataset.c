@@ -58,8 +58,9 @@ struct dataset_t {
 	size_t Length;
 };
 
-static ml_type_t *DatasetT;
-static ml_type_t *ColumnT;
+ML_TYPE(DatasetT, (), "dataset");
+
+ML_TYPE(ColumnT, (), "column");
 
 column_type_t column_get_type(column_t *Column) {
 	return Column->DataType;
@@ -392,7 +393,7 @@ void dataset_watcher_foreach(dataset_t *Dataset, void *Data, int (*Callback)(con
 	stringmap_foreach(Dataset->Watchers, Data, Callback);
 }
 
-static ml_value_t *ml_dataset_open(void *Data, int Count, ml_value_t **Args) {
+ML_FUNCTION(DatasetOpen) {
 	ML_CHECK_ARG_COUNT(1);
 	ML_CHECK_ARG_TYPE(0, MLStringT);
 	dataset_t *Dataset = dataset_open(ml_string_value(Args[0]));
@@ -403,7 +404,7 @@ static ml_value_t *ml_dataset_open(void *Data, int Count, ml_value_t **Args) {
 	}
 }
 
-static ml_value_t *ml_dataset_create(void *Data, int Count, ml_value_t **Args) {
+ML_FUNCTION(DatasetCreate) {
 	ML_CHECK_ARG_COUNT(3);
 	ML_CHECK_ARG_TYPE(0, MLStringT);
 	ML_CHECK_ARG_TYPE(1, MLStringT);
@@ -416,24 +417,24 @@ static ml_value_t *ml_dataset_create(void *Data, int Count, ml_value_t **Args) {
 	}
 }
 
-static ml_value_t *ml_dataset_column_count(void *Data, int Count, ml_value_t **Args) {
+ML_METHOD("column_count", DatasetT) {
 	dataset_t *Dataset = (dataset_t *)Args[0];
 	return ml_integer(dataset_get_column_count(Dataset));
 }
 
-static ml_value_t *ml_dataset_column_open(void *Data, int Count, ml_value_t **Args) {
+ML_METHOD("column_open", DatasetT, MLStringT) {
 	dataset_t *Dataset = (dataset_t *)Args[0];
 	return (ml_value_t *)dataset_column_open(Dataset, ml_string_value(Args[1]));
 }
 
-static ml_value_t *ml_dataset_column_create(void *Data, int Count, ml_value_t **Args) {
+ML_METHOD("column_create", DatasetT, MLStringT, MLIntegerT) {
 	dataset_t *Dataset = (dataset_t *)Args[0];
 	const char *Name = ml_string_value(Args[1]);
 	column_type_t Type = ml_integer_value(Args[2]);
 	return (ml_value_t *)dataset_column_create(Dataset, Name, Type);
 }
 
-static ml_value_t *ml_column_to_string(void *Data, int Count, ml_value_t **Args) {
+ML_METHOD(MLStringOfMethod, ColumnT) {
 	column_t *Column = (column_t *)Args[0];
 	return ml_string(Column->Name, -1);
 }
@@ -483,17 +484,12 @@ static ml_value_t *column_ref_assign(column_ref_t *Ref, ml_value_t *Value) {
 	return Value;
 }
 
-static ml_type_t ColumnRefT[1] = {{
-	MLTypeT,
-	MLAnyT, "column-ref",
-	ml_default_hash,
-	ml_default_call,
-	(void *)column_ref_deref,
-	(void *)column_ref_assign,
-	NULL, 0, 0
-}};
+ML_TYPE(ColumnRefT, (), "column-ref",
+	.deref = (void *)column_ref_deref,
+	.assign = (void *)column_ref_assign
+);
 
-static ml_value_t *ml_column_index(void *Data, int Count, ml_value_t **Args) {
+ML_METHOD("[]", ColumnT, MLIntegerT) {
 	column_ref_t *ColumnRef = new(column_ref_t);
 	ColumnRef->Type = ColumnRefT;
 	ColumnRef->Column = (column_t *)Args[0];
@@ -501,14 +497,14 @@ static ml_value_t *ml_column_index(void *Data, int Count, ml_value_t **Args) {
 	return (ml_value_t *)ColumnRef;
 }
 
-static ml_value_t *ml_column_extend_hint(void *Data, int Count, ml_value_t **Args) {
+ML_METHOD("extend_hint", ColumnT, MLIntegerT, MLIntegerT) {
 	column_t *Column = (column_t *)Args[0];
 	size_t Index = ml_integer_value(Args[1]);
 	int Length = ml_integer_value(Args[2]);
 	return ml_integer(column_string_extend_hint(Column, Index, Length));
 }
 
-static ml_value_t *ml_column_extend(void *Data, int Count, ml_value_t **Args) {
+ML_METHOD("extend", ColumnT, MLIntegerT) {
 	column_t *Column = (column_t *)Args[0];
 	int Required = ml_integer_value(Args[1]);
 	column_string_extend(Column, Required);
@@ -516,17 +512,10 @@ static ml_value_t *ml_column_extend(void *Data, int Count, ml_value_t **Args) {
 }
 
 void dataset_init(stringmap_t *Globals) {
-	DatasetT = ml_type(MLAnyT, "dataset");
-	ColumnT = ml_type(MLAnyT, "column");
-	stringmap_insert(Globals, "dataset_open", ml_function(NULL, ml_dataset_open));
-	stringmap_insert(Globals, "dataset_create", ml_function(NULL, ml_dataset_create));
+#include "dataset_init.c"
+	stringmap_insert(DatasetT->Exports, "open", DatasetOpen);
+	stringmap_insert(DatasetT->Exports, "create", DatasetCreate);
+	stringmap_insert(Globals, "dataset", DatasetT);
 	stringmap_insert(Globals, "COLUMN_REAL", ml_integer(COLUMN_REAL));
 	stringmap_insert(Globals, "COLUMN_STRING", ml_integer(COLUMN_STRING));
-	ml_method_by_name("column_count", NULL, ml_dataset_column_count, DatasetT, NULL);
-	ml_method_by_name("column_open", NULL, ml_dataset_column_open, DatasetT, MLStringT, NULL);
-	ml_method_by_name("column_create", NULL, ml_dataset_column_create, DatasetT, MLStringT, MLIntegerT, NULL);
-	ml_method_by_name("string", NULL, ml_column_to_string, ColumnT, NULL);
-	ml_method_by_name("[]", NULL, ml_column_index, ColumnT, NULL);
-	ml_method_by_name("extend_hint", NULL, ml_column_extend_hint, ColumnT, MLIntegerT, MLIntegerT, NULL);
-	ml_method_by_name("extend", NULL, ml_column_extend, ColumnT, MLIntegerT, NULL);
 }
