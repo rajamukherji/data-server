@@ -44,10 +44,8 @@ c_program := fun(Executable, Objects, Libraries) do
 	if defined("MINGW") then
 		Executable := old % "exe"
 	end
-	Objects := Objects or []
-	Libraries := Libraries or []
 	var Sources := []
-	for Object in Objects do
+	for Object in Objects or [] do
 		for Extension, Functions in SourceTypes do
 			var Source := Object % Extension
 			if Source:exists then
